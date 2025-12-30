@@ -545,18 +545,18 @@
       <form id="configForm">
         <!-- Basic Configuration (Always Visible) -->
         <div class="form-group">
-          <label class="form-label" for="geminiKey"
-            >Gemini API Key <span class="required">*</span></label
+          <label class="form-label" for="openRouterKey"
+            >OpenRouter API Key <span class="required">*</span></label
           >
           <input
             type="password"
-            id="geminiKey"
-            placeholder="Enter your key from Google AI Studio"
+            id="openRouterKey"
+            placeholder="Enter your OpenRouter API key"
           />
           <div class="help-text">
             Get a free key from
-            <a href="https://makersuite.google.com/app/apikey" target="_blank"
-              >Google AI Studio</a
+            <a href="https://openrouter.ai/keys" target="_blank"
+              >OpenRouter</a
             >
           </div>
         </div>
@@ -825,22 +825,22 @@
           </div>
 
           <div class="form-group">
-            <label class="form-label" for="geminiModel"
-              >Gemini Model Name</label
+            <label class="form-label" for="openRouterModel"
+              >OpenRouter Model</label
             >
             <input
               type="text"
-              id="geminiModel"
-              placeholder="Enter model name (e.g., gemini-2.0-flash-lite)"
-              value="gemini-2.5-flash-lite"
+              id="openRouterModel"
+              placeholder="Enter model name (e.g., xiaomi/mimo-v2-flash:free)"
+              value="xiaomi/mimo-v2-flash:free"
             />
             <div class="help-text">
-              Enter the Gemini model id. See available models at
+              Enter the OpenRouter model id. See available models at
               <a
-                href="https://ai.google.dev/gemini-api/docs/models/gemini"
+                href="https://openrouter.ai/models"
                 target="_blank"
               >
-                Gemini Models Documentation
+                OpenRouter Models
               </a>
             </div>
           </div>
@@ -1096,7 +1096,7 @@
 
       // Remove the old key masking functions and setup
       function setupKeyHandling() {
-        const keyInputs = ["geminiKey", "tmdbKey", "rpdbKey", "fanartKey"];
+        const keyInputs = ["openRouterKey", "tmdbKey", "rpdbKey", "fanartKey"];
 
         keyInputs.forEach((inputId) => {
           const input = document.getElementById(inputId);
@@ -1116,12 +1116,12 @@
       });
 
       window.getAddonUrl = async function () {
-        const geminiKey = document.getElementById("geminiKey").value.trim();
+        const openRouterKey = document.getElementById("openRouterKey").value.trim();
         const tmdbKey = document.getElementById("tmdbKey").value.trim();
         
         // Basic validation
-        if (!geminiKey || geminiKey.length < 10) {
-          showError("Please enter a valid Gemini API key");
+        if (!openRouterKey || openRouterKey.length < 10) {
+          showError("Please enter a valid OpenRouter API key");
           return null;
         }
         if (!tmdbKey || tmdbKey.length < 10) {
@@ -1131,7 +1131,7 @@
 
         try {
           setLoading(true);
-          const isValid = await validateApiKeys(geminiKey, tmdbKey);
+          const isValid = await validateApiKeys(openRouterKey, tmdbKey);
           if (!isValid) return null;
           clearError();
 
@@ -1139,14 +1139,14 @@
 
           // 1. Prepare the main configuration object
           const configData = {
-            GeminiApiKey: geminiKey,
+            OpenRouterApiKey: openRouterKey,
             TmdbApiKey: tmdbKey,
             RpdbApiKey: document.getElementById("rpdbKey").value.trim(),
             FanartApiKey: document.getElementById("fanartKey").value.trim(),
             NumResults: parseInt(document.getElementById("numResults").value.trim()) || 20,
             EnableAiCache: document.getElementById("enableAiCache").checked,
             TmdbLanguage: document.getElementById("tmdbLanguage").value,
-            GeminiModel: document.getElementById("geminiModel").value,
+            OpenRouterModel: document.getElementById("openRouterModel").value,
             EnableRpdb: document.getElementById("enableRpdbPosters").checked,
             EnableHomepage: document.getElementById("enableHomepage").checked,
             IncludeAdult: document.getElementById("includeAdult").checked,
@@ -1211,7 +1211,7 @@
         }
       };
 
-      async function validateApiKeys(geminiKey, tmdbKey) {
+      async function validateApiKeys(openRouterKey, tmdbKey) {
         const errorDiv = document.getElementById("error");
         const traktAccessToken = document
           .getElementById("traktAccessToken")
@@ -1228,7 +1228,7 @@
               "Content-Type": "application/json",
             },
             body: JSON.stringify({
-              GeminiApiKey: geminiKey,
+              OpenRouterApiKey: openRouterKey,
               TmdbApiKey: tmdbKey,
               FanartApiKey: fanartKey,
               TraktAccessToken: traktAccessToken,
@@ -1238,7 +1238,7 @@
 
           const result = await response.json();
 
-          if (!result.gemini || !result.tmdb) {
+          if (!result.openRouter || !result.tmdb) {
             errorDiv.style.display = "block";
             errorDiv.textContent = Object.values(result.errors).join(". ");
             return false;
@@ -1317,7 +1317,7 @@
       */
 
       // Update input change handlers to not automatically clear errors
-      document.getElementById("geminiKey").addEventListener("input", () => {
+      document.getElementById("openRouterKey").addEventListener("input", () => {
         document.getElementById("manual-url").style.display = "none";
       });
       document.getElementById("tmdbKey").addEventListener("input", () => {
@@ -1427,8 +1427,12 @@
               console.log("Loaded configuration:", config);
 
               // Pre-fill the form with the existing configuration
-              if (config.GeminiApiKey)
-                document.getElementById("geminiKey").value =
+              if (config.OpenRouterApiKey)
+                document.getElementById("openRouterKey").value =
+                  config.OpenRouterApiKey;
+              // Backward compatibility: also check for old GeminiApiKey
+              else if (config.GeminiApiKey)
+                document.getElementById("openRouterKey").value =
                   config.GeminiApiKey;
               if (config.TmdbApiKey)
                 document.getElementById("tmdbKey").value = config.TmdbApiKey;
@@ -1449,8 +1453,12 @@
               if (config.EnableAiCache !== undefined)
                 document.getElementById("enableAiCache").checked =
                   config.EnableAiCache;
-              if (config.GeminiModel)
-                document.getElementById("geminiModel").value =
+              if (config.OpenRouterModel)
+                document.getElementById("openRouterModel").value =
+                  config.OpenRouterModel;
+              // Backward compatibility: also check for old GeminiModel
+              else if (config.GeminiModel)
+                document.getElementById("openRouterModel").value =
                   config.GeminiModel;
               if (config.EnableRpdb !== undefined) {
                 document.getElementById("enableRpdbPosters").checked =
@@ -1503,7 +1511,7 @@
                 config.NumResults ||
                 config.EnableAiCache !== undefined ||
                 config.TraktAccessToken ||
-                config.GeminiModel ||
+                config.OpenRouterModel || config.GeminiModel ||
                 config.EnableRpdb // Check the new flag too
               ) {
                 document.getElementById("showAdvancedOptions").checked = true;
@@ -1624,7 +1632,7 @@ window.addEventListener("message", async function (event) {
 
       async function authenticateTrakt() {
         const formData = {
-          geminiKey: document.getElementById("geminiKey").value,
+          openRouterKey: document.getElementById("openRouterKey").value,
           tmdbKey: document.getElementById("tmdbKey").value,
           rpdbKey: document.getElementById("rpdbKey").value,
           rpdbPosterType: document.getElementById("rpdbPosterType").value,
@@ -1633,7 +1641,7 @@ window.addEventListener("message", async function (event) {
           enableAiCache: document.getElementById("enableAiCache").checked,
           showAdvancedOptions: document.getElementById("showAdvancedOptions")
             .checked,
-          geminiModel: document.getElementById("geminiModel").value,
+          openRouterModel: document.getElementById("openRouterModel").value,
           traktAccessToken: document.getElementById("traktAccessToken").value,
           traktRefreshToken: document.getElementById("traktRefreshToken").value,
           enableRpdbPosters:
@@ -1672,7 +1680,7 @@ window.addEventListener("message", async function (event) {
         const savedFormData = sessionStorage.getItem("formData");
         if (savedFormData) {
           const formData = JSON.parse(savedFormData);
-          document.getElementById("geminiKey").value = formData.geminiKey || "";
+          document.getElementById("openRouterKey").value = formData.openRouterKey || formData.geminiKey || "";
           document.getElementById("tmdbKey").value = formData.tmdbKey || "";
           document.getElementById("rpdbKey").value = formData.rpdbKey || "";
           document.getElementById("rpdbPosterType").value =
@@ -1683,8 +1691,10 @@ window.addEventListener("message", async function (event) {
             formData.numResults || "20";
           document.getElementById("enableAiCache").checked =
             formData.enableAiCache !== false;
-          if (formData.geminiModel)
-            document.getElementById("geminiModel").value = formData.geminiModel;
+          if (formData.openRouterModel)
+            document.getElementById("openRouterModel").value = formData.openRouterModel;
+          else if (formData.geminiModel)
+            document.getElementById("openRouterModel").value = formData.geminiModel;
 
           // NEW: Restore RPDB checkbox state
           document.getElementById("enableRpdbPosters").checked =

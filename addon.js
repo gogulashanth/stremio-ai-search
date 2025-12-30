@@ -1,5 +1,4 @@
 const { addonBuilder } = require("stremio-addon-sdk");
-const { GoogleGenerativeAI, GoogleSearch } = require("@google/generative-ai");
 const fetch = require("node-fetch").default;
 const logger = require("./utils/logger");
 const path = require("path");
@@ -240,7 +239,61 @@ setInterval(() => {
   });
 }, 60 * 60 * 1000);
 
-const DEFAULT_GEMINI_MODEL = "gemini-2.0-flash-lite";
+const DEFAULT_OPENROUTER_MODEL = "xiaomi/mimo-v2-flash:free";
+
+// Helper function to create OpenRouter client
+// Using dynamic import since @openrouter/sdk may not support CommonJS require
+async function createOpenRouterClient(apiKey) {
+  try {
+    // Try dynamic import first (for ESM modules)
+    const { OpenRouter } = await import("@openrouter/sdk");
+    return new OpenRouter({ apiKey });
+  } catch (error) {
+    // Fallback to direct HTTP requests if SDK import fails
+    logger.warn("Failed to import @openrouter/sdk, using direct HTTP requests", { error: error.message });
+    return null;
+  }
+}
+
+// Helper function to make OpenRouter API calls
+async function callOpenRouter(apiKey, model, messages, options = {}) {
+  const client = await createOpenRouterClient(apiKey);
+  
+  if (client) {
+    // Use SDK if available
+    const result = await client.chat.send({
+      messages,
+      model,
+      stream: false,
+      ...options
+    });
+    return result.choices[0].message.content;
+  } else {
+    // Fallback to direct HTTP request
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": HOST,
+        "X-Title": "Stremio AI Search"
+      },
+      body: JSON.stringify({
+        model,
+        messages,
+        ...options
+      })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`OpenRouter API error: ${response.status} - ${errorText}`);
+    }
+
+    const data = await response.json();
+    return data.choices[0].message.content;
+  }
+}
 
 // Add separate caches for raw and processed Trakt data
 const traktRawDataCache = new SimpleLRUCache({
@@ -2448,13 +2501,11 @@ function deserializeAllCaches(data) {
 /**
  * Makes an AI call to determine the content type and genres for a recommendation query
  * @param {string} query - The user's search query
- * @param {string} geminiKey - The Gemini API key
- * @param {string} geminiModel - The Gemini model to use
+ * @param {string} openRouterKey - The OpenRouter API key
+ * @param {string} openRouterModel - The OpenRouter model to use
  * @returns {Promise<{type: string, genres: string[]}>} - The discovered type and genres
  */
-async function discoverTypeAndGenres(query, geminiKey, geminiModel) {
-  const genAI = new GoogleGenerativeAI(geminiKey);
-  const model = genAI.getGenerativeModel({ model: geminiModel });
+async function discoverTypeAndGenres(query, openRouterKey, openRouterModel) {
 
   const promptText = `
 Analyze this recommendation query: "${query}"
@@ -2484,35 +2535,34 @@ Do not include any explanatory text before or after your response. Just the sing
   try {
     logger.info("Making genre discovery API call", {
       query,
-      model: geminiModel,
+      model: openRouterModel,
     });
 
-    // Use withRetry for the Gemini API call
+    // Use withRetry for the OpenRouter API call
     const text = await withRetry(
       async () => {
         try {
-          const aiResult = await model.generateContent(promptText);
-          const response = await aiResult.response;
-          const responseText = response.text().trim();
+          const responseText = await callOpenRouter(
+            openRouterKey,
+            openRouterModel,
+            [{ role: "user", content: promptText }]
+          );
 
-          // Log successful response with more details
+          // Log successful response
           logger.info("Genre discovery API response", {
-            promptTokens: aiResult.promptFeedback?.tokenCount,
-            candidates: aiResult.candidates?.length,
-            safetyRatings: aiResult.candidates?.[0]?.safetyRatings,
             responseTextLength: responseText.length,
             responseTextSample: responseText,
           });
 
-          return responseText;
+          return responseText.trim();
         } catch (error) {
           // Enhance error with status for retry logic
           logger.error("Genre discovery API call failed", {
             error: error.message,
-            status: error.httpStatus || 500,
+            status: error.status || 500,
             stack: error.stack,
           });
-          error.status = error.httpStatus || 500;
+          error.status = error.status || 500;
           throw error;
         }
       },
@@ -2700,7 +2750,7 @@ const catalogHandler = async function (args, req) {
       return { metas: [errorMeta] };
     }
 
-    const geminiKey = configData.GeminiApiKey;
+    const openRouterKey = configData.OpenRouterApiKey;
     const tmdbKey = configData.TmdbApiKey;
 
     if (configData.traktConnectionError) {
@@ -2720,9 +2770,9 @@ const catalogHandler = async function (args, req) {
       const errorMeta = createErrorMeta('TMDB API Key Invalid', `The key failed validation (Status: ${tmdbResponse.status}). Please check your TMDB key in the addon settings.`);
       return { metas: [errorMeta] };
     }
-    if (!geminiKey || geminiKey.length < 10) {
-      logger.error('Gemini API Key Invalid', { reason: 'Your Gemini API key is missing or invalid.' });
-      const errorMeta = createErrorMeta('Gemini API Key Invalid', 'Your Gemini API key is missing or invalid. Please correct it in the addon settings.');
+    if (!openRouterKey || openRouterKey.length < 10) {
+      logger.error('OpenRouter API Key Invalid', { reason: 'Your OpenRouter API key is missing or invalid.' });
+      const errorMeta = createErrorMeta('OpenRouter API Key Invalid', 'Your OpenRouter API key is missing or invalid. Please correct it in the addon settings.');
       return { metas: [errorMeta] };
     }
 
@@ -2790,15 +2840,15 @@ const catalogHandler = async function (args, req) {
       traktAccessTokenLength: configData.TraktAccessToken?.length || 0,
     });
 
-    const geminiModel = configData.GeminiModel || DEFAULT_GEMINI_MODEL;
+    const openRouterModel = configData.OpenRouterModel || DEFAULT_OPENROUTER_MODEL;
     const language = configData.TmdbLanguage || "en-US";
 
-    if (!geminiKey || geminiKey.length < 10) {
-      logger.error("Invalid or missing Gemini API key");
+    if (!openRouterKey || openRouterKey.length < 10) {
+      logger.error("Invalid or missing OpenRouter API key");
       return {
         metas: [],
         error:
-          "Invalid Gemini API key. Please reconfigure the addon with a valid key.",
+          "Invalid OpenRouter API key. Please reconfigure the addon with a valid key.",
       };
     }
 
@@ -2830,7 +2880,7 @@ const catalogHandler = async function (args, req) {
         numResults,
         rawNumResults: configData.NumResults,
         type,
-        hasGeminiKey: !!geminiKey,
+        hasOpenRouterKey: !!openRouterKey,
         hasTmdbKey: !!tmdbKey,
         hasRpdbKey: !!rpdbKey,
         isDefaultRpdbKey: rpdbKey === DEFAULT_RPDB_KEY,
@@ -2838,14 +2888,14 @@ const catalogHandler = async function (args, req) {
         enableAiCache: enableAiCache,
         enableRpdb: enableRpdb,
         includeAdult: includeAdult,
-        geminiModel: geminiModel,
+        openRouterModel: openRouterModel,
         language: language,
         hasTraktClientId: !!DEFAULT_TRAKT_CLIENT_ID,
         hasTraktAccessToken: !!configData.TraktAccessToken,
       });
     }
 
-    if (!geminiKey || !tmdbKey) {
+    if (!openRouterKey || !tmdbKey) {
       logger.error("Missing API keys in catalog handler");
       logger.emptyCatalog("Missing API keys", { type, extra });
       return { metas: [] };
@@ -2948,8 +2998,8 @@ const catalogHandler = async function (args, req) {
       // Make the genre discovery API call
       const discoveryResult = await discoverTypeAndGenres(
         searchQuery,
-        geminiKey,
-        geminiModel
+        openRouterKey,
+        openRouterModel
       );
       discoveredGenres = discoveryResult.genres;
 
@@ -3063,7 +3113,7 @@ const catalogHandler = async function (args, req) {
         cacheKey,
         query: searchQuery,
         type,
-        model: geminiModel,
+        model: openRouterModel,
         cachedAt: new Date(cached.timestamp).toISOString(),
         age: `${Math.round((Date.now() - cached.timestamp) / 1000)}s`,
         responseTime: `${Date.now() - startTime}ms`,
@@ -3105,7 +3155,7 @@ const catalogHandler = async function (args, req) {
           logger.error("AI returned no valid recommendations", { 
             query: searchQuery, 
             type: type,
-            model: geminiModel,
+            model: openRouterModel,
             responseText: text
           });
           const errorMeta = createErrorMeta('No Results Found', 'The AI could not find any recommendations for your query. Please try rephrasing your search.');
@@ -3200,8 +3250,6 @@ const catalogHandler = async function (args, req) {
     }
 
     try {
-      const genAI = new GoogleGenerativeAI(geminiKey);
-      const model = genAI.getGenerativeModel({ model: geminiModel });
       const genreCriteria = extractGenreCriteria(searchQuery);
       const currentYear = new Date().getFullYear();
 
@@ -3492,8 +3540,8 @@ const catalogHandler = async function (args, req) {
 
       promptText = promptText.join("\n");
 
-      logger.info("Making Gemini API call", {
-        model: geminiModel,
+      logger.info("Making OpenRouter API call", {
+        model: openRouterModel,
         query: searchQuery,
         type,
         prompt: promptText,
@@ -3501,33 +3549,32 @@ const catalogHandler = async function (args, req) {
         numResults,
       });
 
-      // Use withRetry for the Gemini API call
+      // Use withRetry for the OpenRouter API call
       const text = await withRetry(
         async () => {
           try {
-            const aiResult = await model.generateContent(promptText);
-            const response = await aiResult.response;
-            const responseText = response.text().trim();
+            const responseText = await callOpenRouter(
+              openRouterKey,
+              openRouterModel,
+              [{ role: "user", content: promptText }]
+            );
 
-            logger.info("Gemini API response", {
+            logger.info("OpenRouter API response", {
               duration: `${Date.now() - startTime}ms`,
-              promptTokens: aiResult.promptFeedback?.tokenCount,
-              candidates: aiResult.candidates?.length,
-              safetyRatings: aiResult.candidates?.[0]?.safetyRatings,
               responseTextLength: responseText.length,
               responseTextSample:
                 responseText.substring(0, 100) +
                 (responseText.length > 100 ? "..." : ""),
             });
 
-            return responseText;
+            return responseText.trim();
           } catch (error) {
-            logger.error("Gemini API call failed", {
+            logger.error("OpenRouter API call failed", {
               error: error.message,
-              status: error.httpStatus || 500,
+              status: error.status || 500,
               stack: error.stack,
             });
-            error.status = error.httpStatus || 500;
+            error.status = error.status || 500;
             throw error;
           }
         },
@@ -3537,7 +3584,7 @@ const catalogHandler = async function (args, req) {
           maxDelay: 10000,
           // Don't retry 400 errors (bad requests)
           shouldRetry: (error) => !error.status || error.status !== 400,
-          operationName: "Gemini API call",
+          operationName: "OpenRouter API call",
         }
       );
 
@@ -3881,14 +3928,14 @@ const catalogHandler = async function (args, req) {
 
       return { metas: finalMetas };
     } catch (error) {
-      logger.error("Gemini API Error:", { error: error.message, stack: error.stack, query: searchQuery });
+      logger.error("OpenRouter API Error:", { error: error.message, stack: error.stack, query: searchQuery });
       let errorMessage = 'The AI model failed to respond. This may be a temporary issue.';
       if (error.message.includes('400') || error.message.includes('API key not valid')) {
-        errorMessage = 'Your Gemini API key is invalid or has been revoked. Please update it in the settings.';
+        errorMessage = 'Your OpenRouter API key is invalid or has been revoked. Please update it in the settings.';
       } else if (error.message.includes('quota')) {
-        errorMessage = 'You have exceeded your Gemini API quota for the day. Please check your Google AI Studio account.';
+        errorMessage = 'You have exceeded your OpenRouter API quota for the day. Please check your OpenRouter account.';
       } else if (error.message.includes('404')) {
-          errorMessage = 'The selected Gemini Model is invalid or not found. Please try a different model in the settings.';
+          errorMessage = 'The selected OpenRouter Model is invalid or not found. Please try a different model in the settings.';
       }
       const errorMeta = createErrorMeta('AI Error', errorMessage);
       return { metas: [errorMeta] };
@@ -3950,7 +3997,7 @@ const metaHandler = async function (args) {
         throw new Error("Failed to decrypt config data in metaHandler");
       }
       const configData = JSON.parse(decryptedConfigStr);
-      const { GeminiApiKey, TmdbApiKey, GeminiModel, NumResults, RpdbApiKey, RpdbPosterType, TmdbLanguage, FanartApiKey } = configData;
+      const { OpenRouterApiKey, TmdbApiKey, OpenRouterModel, NumResults, RpdbApiKey, RpdbPosterType, TmdbLanguage, FanartApiKey } = configData;
 
       const originalId = id.split(':')[1];
       
@@ -4015,22 +4062,21 @@ const metaHandler = async function (args) {
       movie|Prisoners|2013
       `;
 
-      const genAI = new GoogleGenerativeAI(GeminiApiKey);
-      const model = genAI.getGenerativeModel({ model: GeminiModel || DEFAULT_GEMINI_MODEL });
-      
-      const aiResult = await withRetry(
+      const responseText = await withRetry(
         async () => {
-          return await model.generateContent(promptText);
+          return await callOpenRouter(
+            OpenRouterApiKey,
+            OpenRouterModel || DEFAULT_OPENROUTER_MODEL,
+            [{ role: "user", content: promptText }]
+          );
         },
         {
           maxRetries: 3,
           baseDelay: 1000,
           shouldRetry: (error) => !error.status || error.status !== 400,
-          operationName: "Gemini API call (similar content)"
+          operationName: "OpenRouter API call (similar content)"
         }
       );
-      
-      const responseText = aiResult.response.text().trim();
       const lines = responseText.split('\n').map(line => line.trim()).filter(Boolean);
 
       const videoPromises = lines.map(async (line) => {

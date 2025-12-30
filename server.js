@@ -323,7 +323,7 @@ const setupManifest = {
   configurationURL: `${HOST}${BASE_PATH}/configure`,
 };
 
-const getConfiguredManifest = (geminiKey, tmdbKey) => ({
+const getConfiguredManifest = (openRouterKey, tmdbKey) => ({
   ...setupManifest,
   behaviorHints: {
     configurable: false,
@@ -1483,28 +1483,28 @@ app.post(["/validate", "/aisearch/validate"], express.json(), async (req, res) =
   const startTime = Date.now();
   try {
     const {
-      GeminiApiKey,
+      OpenRouterApiKey,
       TmdbApiKey,
-      GeminiModel,
+      OpenRouterModel,
       TraktAccessToken,
       FanartApiKey,
       traktUsername,
     } = req.body;
     
     const validationResults = {
-      gemini: false,
+      openRouter: false,
       tmdb: false,
       fanart: true, // Optional, so default to true
       trakt: true,
       errors: {},
     };
     
-    const modelToUse = GeminiModel || "gemini-2.5-flash-lite";
+    const modelToUse = OpenRouterModel || "xiaomi/mimo-v2-flash:free";
 
     if (ENABLE_LOGGING) {
       logger.debug("Validation request received", {
         path: req.path,
-        hasGeminiKey: !!GeminiApiKey,
+        hasOpenRouterKey: !!OpenRouterApiKey,
         hasTmdbKey: !!TmdbApiKey,
         hasTraktToken: !!TraktAccessToken,
         hasTraktUsername: !!traktUsername,
@@ -1513,26 +1513,53 @@ app.post(["/validate", "/aisearch/validate"], express.json(), async (req, res) =
 
     const validations = [];
 
-    // Gemini Validation
-    if (GeminiApiKey) {
+    // OpenRouter Validation
+    if (OpenRouterApiKey) {
       validations.push((async () => {
         try {
-          const { GoogleGenerativeAI } = require("@google/generative-ai");
-          const genAI = new GoogleGenerativeAI(GeminiApiKey);
-          const model = genAI.getGenerativeModel({ model: modelToUse });
-          const result = await model.generateContent("Test prompt");
-          const responseText = result.response.text();
+          // Try to use OpenRouter SDK, fallback to direct HTTP
+          let responseText = "";
+          try {
+            const { OpenRouter } = await import("@openrouter/sdk");
+            const openRouter = new OpenRouter({ apiKey: OpenRouterApiKey });
+            const result = await openRouter.chat.send({
+              messages: [{ role: "user", content: "Test prompt" }],
+              model: modelToUse,
+              stream: false
+            });
+            responseText = result.choices[0].message.content;
+          } catch (sdkError) {
+            // Fallback to direct HTTP request
+            const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+              method: "POST",
+              headers: {
+                "Authorization": `Bearer ${OpenRouterApiKey}`,
+                "Content-Type": "application/json",
+                "HTTP-Referer": HOST,
+                "X-Title": "Stremio AI Search"
+              },
+              body: JSON.stringify({
+                model: modelToUse,
+                messages: [{ role: "user", content: "Test prompt" }]
+              })
+            });
+            if (!response.ok) {
+              throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+            }
+            const data = await response.json();
+            responseText = data.choices[0].message.content;
+          }
           if (responseText.length > 0) {
-            validationResults.gemini = true;
+            validationResults.openRouter = true;
           } else {
-            validationResults.errors.gemini = "Invalid Gemini API key - No response";
+            validationResults.errors.openRouter = "Invalid OpenRouter API key - No response";
           }
         } catch (error) {
-          validationResults.errors.gemini = `Invalid Gemini API key: ${error.message}`;
+          validationResults.errors.openRouter = `Invalid OpenRouter API key: ${error.message}`;
         }
       })());
     } else {
-       validationResults.errors.gemini = "Gemini API Key is required.";
+       validationResults.errors.openRouter = "OpenRouter API Key is required.";
     }
 
     // TMDB Validation
@@ -1638,6 +1665,9 @@ app.post(["/validate", "/aisearch/validate"], express.json(), async (req, res) =
         duration: `${Date.now() - startTime}ms`,
       });
     }
+
+    // Map openRouter to gemini for backward compatibility in response (if needed)
+    // But we'll use openRouter in the actual response
 
     res.json(validationResults);
   } catch (error) {
